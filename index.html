@@ -639,7 +639,8 @@ const toggleLog = () => { const l = $('log'); l.style.display = l.style.display 
 $('clock').parentElement.addEventListener('click', toggleLog); $('gear').addEventListener('click', toggleLog);
 
 // ===== Bluetooth ELM327 =====
-const SERVICES = [0xfff0, 0xffe0, 0x18f0, 0xffb0, 'e7810a71-73ae-499d-8c15-faa9aef0c3f2', '0000ae00-0000-1000-8000-00805f9b34fb'];
+const SERVICES = [0xfff0, 0xffe0, 0x18f0, 0xffb0, 'e7810a71-73ae-499d-8c15-faa9aef0c3f2', '0000ae00-0000-1000-8000-00805f9b34fb',
+  '6e400001-b5a3-f393-e0a9-e50e24dcca9e', '49535343-fe7d-4ae5-8fa9-9fafd205e455', 'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f', 0xfee0, 0xfee7, 0xae30];
 const INIT = ['ATZ', 'ATE0', 'ATL0', 'ATS0', 'ATH0', 'ATSP3', 'ATSTFF'];
 const enc = new TextEncoder(), dec = new TextDecoder();
 let device = null, rxChar = null, txChar = null, rx = '', waiter = null, loopId = 0;
@@ -661,7 +662,10 @@ function send(cmd, timeoutMs = 3000) {
     try {
       for (let i = 0; i < bytes.length; i += 20) {
         const chunk = bytes.slice(i, i + 20);
-        if (txChar.properties.writeWithoutResponse) await txChar.writeValueWithoutResponse(chunk); else await txChar.writeValue(chunk);
+        const c = txChar;
+        if (c.properties.writeWithoutResponse && c.writeValueWithoutResponse) await c.writeValueWithoutResponse(chunk);
+        else if (c.properties.write && c.writeValueWithResponse) await c.writeValueWithResponse(chunk);
+        else await c.writeValue(chunk);
       }
     } catch (err) { if (waiter) clearTimeout(waiter.timer); waiter = null; reject(err); }
   });
@@ -678,17 +682,23 @@ function pidBytes(reply, pid) {
 
 async function attach() {
   rxChar = txChar = null;
+  log('Connecting to ' + (device.name || 'scanner') + '…');
   const server = await device.gatt.connect();
-  for (const svc of await server.getPrimaryServices()) {
+  // Some browsers (Bluefy on iPad) only list services when asked for them one by one.
+  let svcs = await server.getPrimaryServices().catch(e => { log('Service list: ' + e.message); return []; });
+  if (!svcs.length) for (const u of SERVICES) { try { svcs.push(await server.getPrimaryService(u)); } catch (e) {} }
+  log('Scanner services: ' + (svcs.map(s => s.uuid.slice(0, 8)).join(', ') || 'none found'));
+  for (const svc of svcs) {
     let n = null, w = null;
-    for (const c of await svc.getCharacteristics()) {
+    const chars = await svc.getCharacteristics().catch(() => []);
+    for (const c of chars) {
       const p = c.properties;
       if (!n && (p.notify || p.indicate)) n = c;
       if (!w && (p.write || p.writeWithoutResponse)) w = c;
     }
-    if (n && w) { rxChar = n; txChar = w; break; }
+    if (n && w) { rxChar = n; txChar = w; log('Using ' + svc.uuid.slice(0, 8) + ': listen ' + n.uuid.slice(0, 8) + ', send ' + w.uuid.slice(0, 8)); break; }
   }
-  if (!rxChar) throw new Error('NO SERIAL SERVICE - SCANNER MAY BE CLASSIC BT');
+  if (!rxChar) throw new Error(svcs.length ? 'SCANNER HAS NO SERIAL LINK - WRONG DEVICE?' : 'NO SERIAL SERVICE - SCANNER MAY BE CLASSIC BT');
   await rxChar.startNotifications();
   rxChar.addEventListener('characteristicvaluechanged', onData);
 }
@@ -876,9 +886,11 @@ async function connect() {
     if (!device?.gatt?.connected) device = null;
     link = 'failed';
     lastError = (e.name === 'NotFoundError' ? 'NO DEVICE PICKED' : (e.message || 'CONNECT FAILED')).toUpperCase().slice(0, 48);
-    log('ERROR ' + e.message);
+    log('ERROR ' + (e.name || '') + ': ' + e.message);
+    drawSlow();
   }
 }
+log('BROWSER  ' + (navigator.bluetooth ? 'Bluetooth: yes' : 'Bluetooth: NO') + ' · secure page: ' + (window.isSecureContext ? 'yes' : 'NO') + ' · ' + navigator.userAgent.replace(/^Mozilla\/5.0 /, '').slice(0, 120));
 if (!/[?&]demo/.test(location.search)) setTimeout(autoConnect, 1000);
 $('parked').addEventListener('click', () => { parkOverride = true; setParked(false); });
 // Tap the status pill while connected, then tap again within 3 s, to disconnect.
