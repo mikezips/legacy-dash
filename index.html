@@ -868,11 +868,27 @@ async function connect() {
   if (link !== 'idle' && link !== 'failed') return;
   autoOn = true;
   if (!window.isSecureContext) { link = 'failed'; lastError = 'PAGE NOT SECURE - BLUETOOTH BLOCKED'; log(lastError); drawSlow(); return; }
-  if (!navigator.bluetooth) { link = 'failed'; lastError = 'NO BLUETOOTH IN THIS BROWSER - USE CHROME'; log(lastError); drawSlow(); return; }
+  if (!navigator.bluetooth) {
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    link = 'failed'; lastError = ios ? 'OPEN THIS PAGE IN THE BLUEFY APP' : 'NO BLUETOOTH IN THIS BROWSER - USE CHROME';
+    log(lastError + (ios ? ' (Safari, Chrome and home-screen icons made from Safari cannot use Bluetooth on iPhone/iPad)' : '')); drawSlow(); return;
+  }
   try {
     link = 'connecting'; lastError = ''; drawSlow();
     if (!device) {
-      device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+      try { device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES }); }
+      catch (e1) {
+        if (e1.name === 'NotFoundError') throw e1;             // the picker was closed without choosing
+        log('Picker refused (' + e1.name + ': ' + e1.message + '), trying again with a shorter scanner list');
+        try { device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [0xfff0, 0xffe0, 0x18f0] }); }
+        catch (e2) {
+          if (e2.name === 'NotFoundError') throw e2;
+          log('Picker refused again (' + e2.name + ': ' + e2.message + '), trying with only named scanners');
+          device = await navigator.bluetooth.requestDevice({ filters: [{ services: [0xfff0] }, { services: [0xffe0] }, { services: [0x18f0] },
+            { namePrefix: 'OBD' }, { namePrefix: 'V-LINK' }, { namePrefix: 'Vgate' }, { namePrefix: 'VEEPEAK' }, { namePrefix: 'IOS-Vlink' }, { namePrefix: 'Android-Vlink' }],
+            optionalServices: [0xfff0, 0xffe0, 0x18f0] });
+        }
+      }
       device.addEventListener('gattserverdisconnected', onDrop);
       log('Selected ' + (device.name || '(no name)'));
       rememberScanner();
@@ -885,7 +901,7 @@ async function connect() {
     // Forget the picked device only if its link is down, so a wrong pick can be changed.
     if (!device?.gatt?.connected) device = null;
     link = 'failed';
-    lastError = (e.name === 'NotFoundError' ? 'NO DEVICE PICKED' : (e.message || 'CONNECT FAILED')).toUpperCase().slice(0, 48);
+    lastError = (e.name === 'NotFoundError' ? 'NO SCANNER PICKED - TAP TO TRY AGAIN' : e.name === 'NotAllowedError' || e.name === 'SecurityError' ? 'BLUETOOTH NOT ALLOWED - ' + (e.message || e.name) : (e.name && e.name !== 'Error' ? e.name + ': ' : '') + (e.message || 'CONNECT FAILED')).toUpperCase().slice(0, 60);
     log('ERROR ' + (e.name || '') + ': ' + e.message);
     drawSlow();
   }
