@@ -15,6 +15,10 @@
   body { font-family: 'Space Grotesk', system-ui, sans-serif; color: #f5f7fa; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
   #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; transform-origin: 0 0; background: #000; }
   .abs { position: absolute; }
+  /* iPad/iPhone: give every card and pill its own drawing layer above the moving background,
+     so Safari's engine does not drop them while the background redraws */
+  #stage > div:not(#spinWrap), #stage > button, .glass, .pill { -webkit-transform: translateZ(0); transform: translateZ(0); -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+  #bg, #girl { -webkit-transform: translateZ(0); transform: translateZ(0); }
   .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
   /* background: the spiral picture, drawn live at full sharpness, with her on top */
   #bg { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; background: #000; }
@@ -38,7 +42,7 @@
   .tile .v { font-size: 22px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
   .tile .v small { font-size: 14px; color: #f5b041; margin-left: 4px; }
   .light { flex: 1; height: 24px; border-radius: 6px; background: rgba(255,255,255,.1); }
-  #status { position: absolute; left: 50%; top: 36px; transform: translateX(-50%); min-width: 300px; height: 44px; box-sizing: border-box; padding: 0 22px;
+  #status { position: absolute; left: 50%; top: 36px; -webkit-transform: translateX(-50%) translateZ(0); transform: translateX(-50%) translateZ(0); min-width: 300px; height: 44px; box-sizing: border-box; padding: 0 22px;
     border-radius: 999px; display: flex; align-items: center; justify-content: center; gap: 12px; white-space: nowrap; cursor: pointer;
     font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: .16em; border: 1px solid rgba(255,255,255,.10); }
   #status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; flex: none; }
