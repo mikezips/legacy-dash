@@ -686,7 +686,7 @@ async function attach() {
   const server = await device.gatt.connect();
   // Some browsers (Bluefy on iPad) only list services when asked for them one by one.
   let svcs = await server.getPrimaryServices().catch(e => { log('Service list: ' + e.message); return []; });
-  if (!svcs.length) for (const u of SERVICES) { try { svcs.push(await server.getPrimaryService(u)); } catch (e) {} }
+  if (!svcs.length) for (const u of SERVICES) { try { svcs.push(await server.getPrimaryService(uuid(u))); } catch (e) {} }
   log('Scanner services: ' + (svcs.map(s => s.uuid.slice(0, 8)).join(', ') || 'none found'));
   for (const svc of svcs) {
     let n = null, w = null;
@@ -864,6 +864,30 @@ async function autoConnect() {
   autoBusy = false;
   setTimeout(autoConnect, 5000);                   // scanner not in range yet (car off): keep trying quietly
 }
+// Bluefy passes everything to the iPad's own Bluetooth, which wants full-length service IDs, not short numbers.
+const uuid = x => typeof x === 'number' ? '0000' + x.toString(16).padStart(4, '0') + '-0000-1000-8000-00805f9b34fb' : String(x).toLowerCase();
+const errText = e => e == null ? 'no details given (' + e + ')' : typeof e === 'string' ? e : ((e.name && e.name !== 'Error' ? e.name + ': ' : '') + (e.message || String(e)));
+let connStep = '';
+async function pickScanner() {
+  const B = navigator.bluetooth, all = SERVICES.map(uuid), few = [0xfff0, 0xffe0, 0x18f0].map(uuid);
+  const tries = [
+    ['all scanners, full list', () => B.requestDevice({ acceptAllDevices: true, optionalServices: all })],
+    ['all scanners, short list', () => B.requestDevice({ acceptAllDevices: true, optionalServices: few })],
+    ['named scanners', () => B.requestDevice({ filters: [{ services: [few[0]] }, { services: [few[1]] }, { services: [few[2]] },
+      { namePrefix: 'OBD' }, { namePrefix: 'V-LINK' }, { namePrefix: 'Vgate' }, { namePrefix: 'VEEPEAK' }, { namePrefix: 'IOS-Vlink' }, { namePrefix: 'Android-Vlink' }],
+      optionalServices: few })],
+  ];
+  let last;
+  for (const [what, go] of tries) {
+    try { return await go(); }
+    catch (e) {
+      last = e;
+      if (e && e.name === 'NotFoundError') throw e;            // the picker was closed without choosing
+      log('Picker (' + what + ') refused: ' + errText(e));
+    }
+  }
+  throw last;
+}
 async function connect() {
   if (link !== 'idle' && link !== 'failed') return;
   autoOn = true;
@@ -871,41 +895,33 @@ async function connect() {
   if (!navigator.bluetooth) {
     const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     link = 'failed'; lastError = ios ? 'OPEN THIS PAGE IN THE BLUEFY APP' : 'NO BLUETOOTH IN THIS BROWSER - USE CHROME';
-    log(lastError + (ios ? ' (Safari, Chrome and home-screen icons made from Safari cannot use Bluetooth on iPhone/iPad)' : '')); drawSlow(); return;
+    log(lastError); drawSlow(); return;
   }
   try {
     link = 'connecting'; lastError = ''; drawSlow();
     if (!device) {
-      try { device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES }); }
-      catch (e1) {
-        if (e1.name === 'NotFoundError') throw e1;             // the picker was closed without choosing
-        log('Picker refused (' + e1.name + ': ' + e1.message + '), trying again with a shorter scanner list');
-        try { device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [0xfff0, 0xffe0, 0x18f0] }); }
-        catch (e2) {
-          if (e2.name === 'NotFoundError') throw e2;
-          log('Picker refused again (' + e2.name + ': ' + e2.message + '), trying with only named scanners');
-          device = await navigator.bluetooth.requestDevice({ filters: [{ services: [0xfff0] }, { services: [0xffe0] }, { services: [0x18f0] },
-            { namePrefix: 'OBD' }, { namePrefix: 'V-LINK' }, { namePrefix: 'Vgate' }, { namePrefix: 'VEEPEAK' }, { namePrefix: 'IOS-Vlink' }, { namePrefix: 'Android-Vlink' }],
-            optionalServices: [0xfff0, 0xffe0, 0x18f0] });
-        }
-      }
-      device.addEventListener('gattserverdisconnected', onDrop);
+      connStep = 'PICKER'; device = await pickScanner();
+      try { device.addEventListener('gattserverdisconnected', onDrop); } catch (e) { log('No disconnect alerts: ' + errText(e)); }
       log('Selected ' + (device.name || '(no name)'));
       rememberScanner();
     }
     keepAwake();
-    await attach();
-    await initElm();
-    poll();
+    connStep = 'LINK'; await attach();
+    connStep = 'SCANNER SETUP'; await initElm();
+    connStep = ''; poll();
   } catch (e) {
     // Forget the picked device only if its link is down, so a wrong pick can be changed.
-    if (!device?.gatt?.connected) device = null;
+    try { if (!device?.gatt?.connected) device = null; } catch (x) { device = null; }
     link = 'failed';
-    lastError = (e.name === 'NotFoundError' ? 'NO SCANNER PICKED - TAP TO TRY AGAIN' : e.name === 'NotAllowedError' || e.name === 'SecurityError' ? 'BLUETOOTH NOT ALLOWED - ' + (e.message || e.name) : (e.name && e.name !== 'Error' ? e.name + ': ' : '') + (e.message || 'CONNECT FAILED')).toUpperCase().slice(0, 60);
-    log('ERROR ' + (e.name || '') + ': ' + e.message);
+    const named = e && e.name;
+    lastError = (named === 'NotFoundError' ? 'NO SCANNER PICKED - TAP TO TRY AGAIN'
+      : named === 'NotAllowedError' || named === 'SecurityError' ? 'BLUETOOTH NOT ALLOWED - ' + errText(e)
+      : (connStep ? connStep + ' FAILED: ' : '') + errText(e)).toUpperCase().slice(0, 64);
+    log('ERROR at ' + (connStep || 'start') + ': ' + errText(e) + (e && e.stack ? '  [' + String(e.stack).split('\n')[0].slice(0, 120) + ']' : ''));
     drawSlow();
   }
 }
+
 log('BROWSER  ' + (navigator.bluetooth ? 'Bluetooth: yes' : 'Bluetooth: NO') + ' · secure page: ' + (window.isSecureContext ? 'yes' : 'NO') + ' · ' + navigator.userAgent.replace(/^Mozilla\/5.0 /, '').slice(0, 120));
 if (!/[?&]demo/.test(location.search)) setTimeout(autoConnect, 1000);
 $('parked').addEventListener('click', () => { parkOverride = true; setParked(false); });
@@ -939,7 +955,7 @@ const GPS_SERVICES = [
   0xffe0, 0xfff0, 0xfee0,
   '49535343-fe7d-4ae5-8fa9-9fafd205e455',   // Microchip serial
   '0000ae00-0000-1000-8000-00805f9b34fb',
-].concat(CFG.GPS_SERVICE ? [CFG.GPS_SERVICE] : []);
+].concat(CFG.GPS_SERVICE ? [CFG.GPS_SERVICE] : []).map(x => typeof x === 'number' ? '0000' + x.toString(16).padStart(4, '0') + '-0000-1000-8000-00805f9b34fb' : String(x).toLowerCase());
 function gpsSpeed(mph) {
   GPS.lastFix = performance.now(); GPS.state = 'fix';
   gotSpeed(mph < 1.2 ? 0 : mph);                       // ignore GPS jitter when parked
